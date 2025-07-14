@@ -158,7 +158,7 @@ class YourModel(nn.Module):
         self.fc = nn.Linear(64, 2)  # 分成兩類（正常、呼吸中止）
 
     def forward(self, x):
-        x = x.permute(0, 2, 1)  # [batch_size, 1024, 4]
+        x = x.permute(0, 2, 1)  # [batch_size, 4, 1024] 轉換為 [batch_size, 4, 1024]
         x = self.mpca(x)        # [batch_size, 64, 256]
         x = x.permute(0, 2, 1)  # [batch_size, 256, 64]
         x = self.pos_enc(x)     # [batch_size, 256, 64]
