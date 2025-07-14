@@ -73,17 +73,62 @@ def zscore_normalize(ecg):
 # ============================
 
 def detect_rpeaks(ecg, fs):
-    import neurokit2 as nk
-    # 使用 Hamilton 演算法偵測 R-peaks
-    rpeaks, = nk.ecg_hamilton(ecg, sampling_rate=fs)
-    # 修正 R-peaks 位置
-    rpeaks, = nk.ecg_correct_rpeaks(ecg, rpeaks=rpeaks, sampling_rate=fs, tol=0.1)
-    return rpeaks  # global indices of R-peaks
-
-    # from wfdb import processing
-    # xqrs = processing.XQRS(sig=ecg, fs=fs)
-    # xqrs.detect()
-    # return xqrs.qrs_inds  # global indices of R-peaks
+    print(f"R峰檢測 - 信號長度: {len(ecg)}, 採樣率: {fs} Hz")
+    
+    try:
+        # 方法1: 使用 biosppy
+        from biosppy.signals.ecg import correct_rpeaks, hamilton_segmenter
+        print("使用 biosppy Hamilton 演算法...")
+        rpeaks = hamilton_segmenter(ecg, sampling_rate=fs)[0]
+        print(f"   初始檢測到 {len(rpeaks)} 個 R 峰")
+        
+        rpeaks_corrected = correct_rpeaks(signal=ecg, 
+                                        rpeaks=rpeaks, 
+                                        sampling_rate=fs, 
+                                        tol=0.05)[0]
+        print(f"   修正後有 {len(rpeaks_corrected)} 個 R 峰")
+        
+        # 計算平均心率
+        if len(rpeaks_corrected) > 1:
+            avg_rr = np.mean(np.diff(rpeaks_corrected)) / fs
+            avg_hr = 60 / avg_rr
+            print(f"   平均心率: {avg_hr:.1f} bpm")
+        
+        return rpeaks_corrected
+        
+    except Exception as e:
+        print(f"biosppy 失敗: {e}")
+        try:
+            # 方法2: 使用 wfdb 內建方法
+            from wfdb import processing
+            print("使用 wfdb XQRS 演算法...")
+            xqrs = processing.XQRS(sig=ecg, fs=fs)
+            xqrs.detect()
+            rpeaks = xqrs.qrs_inds
+            print(f"   檢測到 {len(rpeaks)} 個 R 峰")
+            
+            if len(rpeaks) > 1:
+                avg_rr = np.mean(np.diff(rpeaks)) / fs
+                avg_hr = 60 / avg_rr
+                print(f"   平均心率: {avg_hr:.1f} bpm")
+            
+            return rpeaks
+            
+        except Exception as e2:
+            print(f"wfdb 失敗: {e2}")
+            # 方法3: 簡單的峰值檢測 (備用方案)
+            from scipy.signal import find_peaks
+            print("使用簡單峰值檢測...")
+            threshold = np.mean(ecg) + 1.5 * np.std(ecg)
+            peaks, _ = find_peaks(ecg, height=threshold, distance=int(0.6*fs))
+            print(f"   檢測到 {len(peaks)} 個峰值")
+            
+            if len(peaks) > 1:
+                avg_rr = np.mean(np.diff(peaks)) / fs
+                avg_hr = 60 / avg_rr
+                print(f"   平均心率: {avg_hr:.1f} bpm")
+            
+            return peaks
 
 def construct_ra_rri_rrid(ecg, rpeaks, fs):
 
@@ -186,8 +231,11 @@ def build_rrid_timeseries(local_rpeaks, fs, length):
 
 def preprocess_record(record_id, base_dir, out_len=1024):
     """Modified to return record_id with each segment"""
+    print(f"\n處理記錄: {record_id}")
+    
     rec_path = os.path.join(base_dir, record_id)
     ecg_raw, fs = load_apnea_ecg_record(rec_path)
+    print(f"   原始 ECG 長度: {len(ecg_raw)} 樣本 ({len(ecg_raw)/fs/60:.1f} 分鐘)")
 
     # Only do wavelet denoising, remove zscore normalization
     ecg_denoised = wavelet_denoise(ecg_raw, "coif4", 6)
@@ -195,14 +243,18 @@ def preprocess_record(record_id, base_dir, out_len=1024):
     ann_path = os.path.join(base_dir, record_id)
     try:
         labels = load_apnea_annotations(ann_path)
+        print(f"   載入標註: {len(labels)} 分鐘, {sum(labels)} 個呼吸中止事件")
     except:
         labels = None
+        print("   警告: 無標註文件")
 
     # Use denoised ECG (not normalized) for r-peak detection
     rpeaks = detect_rpeaks(ecg_denoised, fs)
 
     data_segments = []
     segments = segment_ecg_with_context(ecg_denoised, fs, labels)
+    print(f"   生成 {len(segments)} 個 6 分鐘段")
+    
     for seg_ecg, seg_lbl, start_sample, end_sample in segments:
         seg_len = len(seg_ecg)
         # Resample the local ECG to out_len
@@ -238,6 +290,7 @@ def preprocess_record(record_id, base_dir, out_len=1024):
         # Add record_id to the returned tuple
         data_segments.append((seg_4ch, seg_lbl, record_id))
 
+    print(f"   完成處理，輸出 {len(data_segments)} 個數據段")
     return data_segments
 
 # =====================
@@ -247,6 +300,21 @@ def preprocess_record(record_id, base_dir, out_len=1024):
 def process_segments_segment_level(base_dir, out_len=1024):
     """Process all segments and save with patient IDs"""
     output_dir = os.path.join(base_dir, "split_data")
+    
+    # 檢查是否已存在處理過的數據
+    if os.path.exists(output_dir):
+        existing_files = [f for f in os.listdir(output_dir) if f.endswith('.npy')]
+        if existing_files:
+            print(f"\n警告: 發現已存在的處理數據在 '{output_dir}'")
+            print(f"現有文件: {existing_files}")
+            
+            response = input("是否覆蓋現有數據? (y/n, 預設為 n): ").strip().lower()
+            if response not in ['y', 'yes']:
+                print("取消處理，保留現有數據")
+                return
+            else:
+                print("將覆蓋現有數據...")
+    
     os.makedirs(output_dir, exist_ok=True)
     
     # The 35 labeled records
@@ -256,10 +324,10 @@ def process_segments_segment_level(base_dir, out_len=1024):
         [f"c{i:02d}" for i in range(1, 11)]
     )
     
-    # test_records = [f"x{i:02d}" for i in range(1, 36)]
+    test_records = [f"x{i:02d}" for i in range(1, 36)]
     
     print("Processing labeled records:", labeled_records)
-    # print("Processing test records:", test_records)
+    print("Processing test records:", test_records)
     
     # Process labeled records (for train and val)
     all_segments = []
@@ -271,15 +339,15 @@ def process_segments_segment_level(base_dir, out_len=1024):
     
     print(f"Total segments from labeled records: {len(all_segments)}")
     
-    # # Process test records
-    # test_segments = []
-    # for rec_id in test_records:
-    #     print(f"Processing test record: {rec_id}")
-    #     segs = preprocess_record(rec_id, base_dir, out_len=out_len)
-    #     test_segments.extend(segs)
-    #     print(f"Processed {len(segs)} segments from {rec_id}")
+    # Process test records
+    test_segments = []
+    for rec_id in test_records:
+        print(f"Processing test record: {rec_id}")
+        segs = preprocess_record(rec_id, base_dir, out_len=out_len)
+        test_segments.extend(segs)
+        print(f"Processed {len(segs)} segments from {rec_id}")
     
-    # print(f"Total segments from test records: {len(test_segments)}")
+    print(f"Total segments from test records: {len(test_segments)}")
     
     # Shuffle and split labeled data into train/val
     random.shuffle(all_segments)
@@ -289,12 +357,12 @@ def process_segments_segment_level(base_dir, out_len=1024):
     # Split the data
     train_data = all_segments[:n_train]
     val_data = all_segments[n_train:]
-    # test_data = test_segments
+    test_data = test_segments
     
     # Convert to arrays and save
     trainX, trainY, trainIDs = to_xy(train_data)
     valX, valY, valIDs = to_xy(val_data)
-    # testX, testY, testIDs = to_xy(test_data)
+    testX, testY, testIDs = to_xy(test_data)
     
     # Save training data
     print(f"Saving training data: {len(train_data)} segments")
@@ -308,11 +376,11 @@ def process_segments_segment_level(base_dir, out_len=1024):
     np.save(os.path.join(output_dir, "valY.npy"), valY)
     np.save(os.path.join(output_dir, "valIDs.npy"), valIDs)
     
-    # # Save test data
-    # print(f"Saving test data: {len(test_data)} segments")
-    # np.save(os.path.join(output_dir, "testX.npy"), testX)
-    # np.save(os.path.join(output_dir, "testY.npy"), testY)
-    # np.save(os.path.join(output_dir, "testIDs.npy"), testIDs)
+    # Save test data
+    print(f"Saving test data: {len(test_data)} segments")
+    np.save(os.path.join(output_dir, "testX.npy"), testX)
+    np.save(os.path.join(output_dir, "testY.npy"), testY)
+    np.save(os.path.join(output_dir, "testIDs.npy"), testIDs)
     
     print(f"\nAll data saved in '{output_dir}':")
     print(f"Train: {len(train_data)} segments")
@@ -335,11 +403,98 @@ def to_xy(data_list):
         raise
 
 # =====================
+# PART H: 數據檢查和載入
+# =====================
+
+def check_existing_data(base_dir):
+    """檢查是否已有處理完的數據"""
+    output_dir = os.path.join(base_dir, "split_data")
+    
+    if not os.path.exists(output_dir):
+        return False, "目錄不存在"
+    
+    required_files = [
+        "trainX.npy", "trainY.npy", "trainIDs.npy",
+        "valX.npy", "valY.npy", "valIDs.npy",
+        "testX.npy", "testY.npy", "testIDs.npy"
+    ]
+    
+    existing_files = []
+    missing_files = []
+    
+    for file in required_files:
+        filepath = os.path.join(output_dir, file)
+        if os.path.exists(filepath):
+            existing_files.append(file)
+        else:
+            missing_files.append(file)
+    
+    if len(existing_files) == len(required_files):
+        return True, f"完整數據集已存在 ({len(existing_files)} 個文件)"
+    elif existing_files:
+        return False, f"部分數據存在: {existing_files}, 缺少: {missing_files}"
+    else:
+        return False, "無數據文件"
+
+def load_existing_data(base_dir):
+    """載入已存在的處理數據"""
+    output_dir = os.path.join(base_dir, "split_data")
+    
+    try:
+        trainX = np.load(os.path.join(output_dir, "trainX.npy"))
+        trainY = np.load(os.path.join(output_dir, "trainY.npy"))
+        valX = np.load(os.path.join(output_dir, "valX.npy"))
+        valY = np.load(os.path.join(output_dir, "valY.npy"))
+        testX = np.load(os.path.join(output_dir, "testX.npy"))
+        testY = np.load(os.path.join(output_dir, "testY.npy"))
+        
+        print(f"成功載入現有數據:")
+        print(f"  訓練集: {trainX.shape[0]} 樣本")
+        print(f"  驗證集: {valX.shape[0]} 樣本") 
+        print(f"  測試集: {testX.shape[0]} 樣本")
+        print(f"  數據形狀: {trainX.shape}")
+        
+        return {
+            'trainX': trainX, 'trainY': trainY,
+            'valX': valX, 'valY': valY,
+            'testX': testX, 'testY': testY
+        }
+        
+    except Exception as e:
+        print(f"載入數據時發生錯誤: {e}")
+        return None
+
+# =====================
 # MAIN
 # =====================
 
 if __name__ == "__main__":
     base_dir = r"C:\python\apnea\apnea-ecg-database-1.0.0"  # path where a01.dat, a01.hea, etc. are located
     
-    # You can run either or both:
-    process_segments_segment_level(base_dir, out_len=1024)  # Generate train/val/test
+    # 先檢查是否已有處理好的數據
+    has_data, status = check_existing_data(base_dir)
+    print(f"數據檢查結果: {status}")
+    
+    if has_data:
+        print("\n發現完整的處理數據！")
+        print("選擇操作:")
+        print("1. 載入現有數據 (推薦)")
+        print("2. 重新處理數據 (會覆蓋現有)")
+        print("3. 取消")
+        
+        choice = input("請選擇 (1/2/3, 預設為 1): ").strip()
+        
+        if choice == "2":
+            print("開始重新處理數據...")
+            process_segments_segment_level(base_dir, out_len=1024)
+        elif choice == "3":
+            print("取消操作")
+        else:
+            print("載入現有數據...")
+            data = load_existing_data(base_dir)
+            if data:
+                print("數據載入完成，可以開始訓練模型！")
+    else:
+        print(f"需要處理數據: {status}")
+        print("開始數據處理...")
+        process_segments_segment_level(base_dir, out_len=1024)

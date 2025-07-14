@@ -10,7 +10,7 @@ PyWavelets>=1.1.1
 
 # Signal processing and ECG analysis
 wfdb>=4.0.0
-neurokit2>=0.2.0
+biosppy>=2.0.0
 
 # Progress bar
 tqdm>=4.62.0
