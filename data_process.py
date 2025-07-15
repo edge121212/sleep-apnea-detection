@@ -469,7 +469,7 @@ def load_existing_data(base_dir):
 # =====================
 
 if __name__ == "__main__":
-    base_dir = r"C:\python\apnea\apnea-ecg-database-1.0.0"  # path where a01.dat, a01.hea, etc. are located
+    base_dir = r"C:\python\Apnea\physionet"  # path where a01.dat, a01.hea, etc. are located
     
     # 先檢查是否已有處理好的數據
     has_data, status = check_existing_data(base_dir)
