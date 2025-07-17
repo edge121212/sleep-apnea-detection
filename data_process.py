@@ -13,6 +13,7 @@ import numpy as np
 import wfdb
 import pywt
 from scipy import signal
+from tqdm import tqdm
 
 # ============================
 # PART A: DATA READING
@@ -73,20 +74,29 @@ def zscore_normalize(ecg):
 # ============================
 
 def detect_rpeaks(ecg, fs):
+    from tqdm import tqdm
+    import time
+    
     print(f"R峰檢測 - 信號長度: {len(ecg)}, 採樣率: {fs} Hz")
     
     try:
         # 方法1: 使用 biosppy
         from biosppy.signals.ecg import correct_rpeaks, hamilton_segmenter
-        print("使用 biosppy Hamilton 演算法...")
-        rpeaks = hamilton_segmenter(ecg, sampling_rate=fs)[0]
-        print(f"   初始檢測到 {len(rpeaks)} 個 R 峰")
         
-        rpeaks_corrected = correct_rpeaks(signal=ecg, 
-                                        rpeaks=rpeaks, 
-                                        sampling_rate=fs, 
-                                        tol=0.05)[0]
-        print(f"   修正後有 {len(rpeaks_corrected)} 個 R 峰")
+        # 使用進度條顯示 Hamilton 演算法進度
+        with tqdm(total=2, desc="biosppy Hamilton 演算法", unit="步驟") as pbar:
+            pbar.set_description("初始 R 峰檢測中...")
+            rpeaks = hamilton_segmenter(ecg, sampling_rate=fs)[0]
+            pbar.update(1)
+            print(f"   初始檢測到 {len(rpeaks)} 個 R 峰")
+            
+            pbar.set_description("R 峰修正中...")
+            rpeaks_corrected = correct_rpeaks(signal=ecg, 
+                                            rpeaks=rpeaks, 
+                                            sampling_rate=fs, 
+                                            tol=0.05)[0]
+            pbar.update(1)
+            print(f"   修正後有 {len(rpeaks_corrected)} 個 R 峰")
         
         # 計算平均心率
         if len(rpeaks_corrected) > 1:
@@ -255,7 +265,12 @@ def preprocess_record(record_id, base_dir, out_len=1024):
     segments = segment_ecg_with_context(ecg_denoised, fs, labels)
     print(f"   生成 {len(segments)} 個 6 分鐘段")
     
-    for seg_ecg, seg_lbl, start_sample, end_sample in segments:
+    # 為數據段處理添加進度條
+    from tqdm import tqdm
+    for seg_ecg, seg_lbl, start_sample, end_sample in tqdm(segments, 
+                                                           desc=f"處理 {record_id} 數據段", 
+                                                           leave=False, 
+                                                           unit="段"):
         seg_len = len(seg_ecg)
         # Resample the local ECG to out_len
         ecg_resamp = interp_to_length(seg_ecg, out_len)
@@ -331,25 +346,29 @@ def process_segments_segment_level(base_dir, out_len=1024):
     
     # Process labeled records (for train and val)
     all_segments = []
-    for rec_id in labeled_records:
-        print(f"Processing record: {rec_id}")
+    print(f"\n開始處理 {len(labeled_records)} 個標註記錄...")
+    
+    from tqdm import tqdm
+    for rec_id in tqdm(labeled_records, desc="處理標註記錄", unit="記錄"):
         segs = preprocess_record(rec_id, base_dir, out_len=out_len)
         all_segments.extend(segs)
-        print(f"Processed {len(segs)} segments from {rec_id}")
+        tqdm.write(f"✓ {rec_id}: {len(segs)} 個數據段")
     
-    print(f"Total segments from labeled records: {len(all_segments)}")
+    print(f"標註記錄處理完成！總共 {len(all_segments)} 個數據段")
     
     # Process test records
     test_segments = []
-    for rec_id in test_records:
-        print(f"Processing test record: {rec_id}")
+    print(f"\n開始處理 {len(test_records)} 個測試記錄...")
+    
+    for rec_id in tqdm(test_records, desc="處理測試記錄", unit="記錄"):
         segs = preprocess_record(rec_id, base_dir, out_len=out_len)
         test_segments.extend(segs)
-        print(f"Processed {len(segs)} segments from {rec_id}")
+        tqdm.write(f"✓ {rec_id}: {len(segs)} 個數據段")
     
-    print(f"Total segments from test records: {len(test_segments)}")
+    print(f"測試記錄處理完成！總共 {len(test_segments)} 個數據段")
     
     # Shuffle and split labeled data into train/val
+    print("\n正在分割數據...")
     random.shuffle(all_segments)
     n_total = len(all_segments)
     n_train = int(0.90 * n_total)
@@ -360,27 +379,51 @@ def process_segments_segment_level(base_dir, out_len=1024):
     test_data = test_segments
     
     # Convert to arrays and save
-    trainX, trainY, trainIDs = to_xy(train_data)
-    valX, valY, valIDs = to_xy(val_data)
-    testX, testY, testIDs = to_xy(test_data)
+    print("正在轉換數據格式...")
+    from tqdm import tqdm
     
-    # Save training data
-    print(f"Saving training data: {len(train_data)} segments")
-    np.save(os.path.join(output_dir, "trainX.npy"), trainX)
-    np.save(os.path.join(output_dir, "trainY.npy"), trainY)
-    np.save(os.path.join(output_dir, "trainIDs.npy"), trainIDs)
+    with tqdm(total=3, desc="轉換數據", unit="集") as pbar:
+        pbar.set_description("轉換訓練數據...")
+        trainX, trainY, trainIDs = to_xy(train_data)
+        pbar.update(1)
+        
+        pbar.set_description("轉換驗證數據...")
+        valX, valY, valIDs = to_xy(val_data)
+        pbar.update(1)
+        
+        pbar.set_description("轉換測試數據...")
+        testX, testY, testIDs = to_xy(test_data)
+        pbar.update(1)
     
-    # Save validation data
-    print(f"Saving validation data: {len(val_data)} segments")
-    np.save(os.path.join(output_dir, "valX.npy"), valX)
-    np.save(os.path.join(output_dir, "valY.npy"), valY)
-    np.save(os.path.join(output_dir, "valIDs.npy"), valIDs)
-    
-    # Save test data
-    print(f"Saving test data: {len(test_data)} segments")
-    np.save(os.path.join(output_dir, "testX.npy"), testX)
-    np.save(os.path.join(output_dir, "testY.npy"), testY)
-    np.save(os.path.join(output_dir, "testIDs.npy"), testIDs)
+    # Save with progress bars
+    print("\n正在保存數據文件...")
+    with tqdm(total=9, desc="保存文件", unit="文件") as pbar:
+        # Save training data
+        pbar.set_description("保存訓練數據...")
+        np.save(os.path.join(output_dir, "trainX.npy"), trainX)
+        pbar.update(1)
+        np.save(os.path.join(output_dir, "trainY.npy"), trainY)
+        pbar.update(1)
+        np.save(os.path.join(output_dir, "trainIDs.npy"), trainIDs)
+        pbar.update(1)
+        
+        # Save validation data
+        pbar.set_description("保存驗證數據...")
+        np.save(os.path.join(output_dir, "valX.npy"), valX)
+        pbar.update(1)
+        np.save(os.path.join(output_dir, "valY.npy"), valY)
+        pbar.update(1)
+        np.save(os.path.join(output_dir, "valIDs.npy"), valIDs)
+        pbar.update(1)
+        
+        # Save test data
+        pbar.set_description("保存測試數據...")
+        np.save(os.path.join(output_dir, "testX.npy"), testX)
+        pbar.update(1)
+        np.save(os.path.join(output_dir, "testY.npy"), testY)
+        pbar.update(1)
+        np.save(os.path.join(output_dir, "testIDs.npy"), testIDs)
+        pbar.update(1)
     
     print(f"\nAll data saved in '{output_dir}':")
     print(f"Train: {len(train_data)} segments")

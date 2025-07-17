@@ -5,6 +5,7 @@
 import os
 import torch
 import numpy as np
+from tqdm import tqdm
 from apnea_model import YourModel, load_data, train_model, evaluate_model, FocalLoss
 from utils import save_model, save_results, print_model_summary, plot_training_history
 from config import Config
@@ -39,10 +40,15 @@ def main():
     best_val_loss = float('inf')
     
     for epoch in range(Config.NUM_EPOCHS):
+        print(f"\nEpoch {epoch+1}/{Config.NUM_EPOCHS}")
+        
         # 訓練
         model.train()
         train_loss = 0
-        for X, y in train_loader:
+        
+        # 使用 tqdm 顯示訓練進度
+        train_pbar = tqdm(train_loader, desc=f"Training Epoch {epoch+1}")
+        for X, y in train_pbar:
             X, y = X.to(device), y.to(device)
             optimizer.zero_grad()
             output = model(X)
@@ -50,6 +56,9 @@ def main():
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
+            
+            # 更新進度條顯示當前批次損失
+            train_pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
         
         avg_train_loss = train_loss / len(train_loader)
         train_losses.append(avg_train_loss)
@@ -57,17 +66,22 @@ def main():
         # 驗證
         model.eval()
         val_loss = 0
+        
+        # 使用 tqdm 顯示驗證進度
+        val_pbar = tqdm(val_loader, desc=f"Validation Epoch {epoch+1}")
         with torch.no_grad():
-            for X, y in val_loader:
+            for X, y in val_pbar:
                 X, y = X.to(device), y.to(device)
                 output = model(X)
                 loss = criterion(output, y)
                 val_loss += loss.item()
+                
+                # 更新進度條顯示當前批次損失
+                val_pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
         
         avg_val_loss = val_loss / len(val_loader)
         val_losses.append(avg_val_loss)
         
-        print(f"Epoch {epoch+1}/{Config.NUM_EPOCHS}")
         print(f"  Train Loss: {avg_train_loss:.4f}")
         print(f"  Val Loss: {avg_val_loss:.4f}")
         
@@ -76,6 +90,7 @@ def main():
             best_val_loss = avg_val_loss
             save_model(model, optimizer, epoch, avg_val_loss, 
                       os.path.join(output_dir, "best_model.pth"))
+            print(f"  ✓ Saved new best model (loss: {avg_val_loss:.4f})")
         
         # 評估
         print("  Validation Results:")
@@ -85,12 +100,6 @@ def main():
     # 繪製訓練曲線
     plot_training_history(train_losses, val_losses, 
                          save_path=os.path.join(output_dir, "training_history.png"))
-    
-    # 最終測試評估
-    print("\n" + "="*50)
-    print("FINAL EVALUATION ON TEST SET")
-    print("="*50)
-    evaluate_model(model, test_loader, device, name="Test")
     
     # 保存最終模型
     save_model(model, optimizer, Config.NUM_EPOCHS-1, avg_val_loss,

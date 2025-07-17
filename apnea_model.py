@@ -7,12 +7,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm  # 引入 tqdm 用於視覺化進度條
 
-trainX_path = r"C:\python\apnea\apnea-ecg-database-1.0.0\split_data\trainX.npy"
-trainY_path = r"C:\python\apnea\apnea-ecg-database-1.0.0\split_data\trainY.npy"
-valX_path = r"C:\python\apnea\apnea-ecg-database-1.0.0\split_data\valX.npy"
-valY_path = r"C:\python\apnea\apnea-ecg-database-1.0.0\split_data\valY.npy"
-testX_path = r"C:\python\apnea\apnea-ecg-database-1.0.0\split_data\testX.npy"
-testY_path = r"C:\python\apnea\apnea-ecg-database-1.0.0\split_data\testY.npy"
+trainX_path = r"C:\python\Apnea\physionet\split_data\trainX.npy"
+trainY_path = r"C:\python\Apnea\physionet\split_data\trainY.npy"
+valX_path = r"C:\python\Apnea\physionet\split_data\valX.npy"
+valY_path = r"C:\python\Apnea\physionet\split_data\valY.npy"
+testX_path = r"C:\python\Apnea\physionet\split_data\testX.npy"
+testY_path = r"C:\python\Apnea\physionet\split_data\testY.npy"
 
 def load_data(batch_size=64):
     X_train = torch.tensor(np.load(trainX_path), dtype=torch.float32)

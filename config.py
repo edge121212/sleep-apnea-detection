@@ -4,8 +4,8 @@
 
 class Config:
     # 數據路徑配置
-    BASE_DIR = r"C:\python\apnea\apnea-ecg-database-1.0.0"
-    SPLIT_DATA_DIR = r"C:\python\apnea\apnea-ecg-database-1.0.0\split_data"
+    BASE_DIR = r"C:\python\Apnea\physionet"
+    SPLIT_DATA_DIR = r"C:\python\Apnea\physionet\split_data"
     
     # 數據預處理參數
     SAMPLING_RATE = 100  # Hz

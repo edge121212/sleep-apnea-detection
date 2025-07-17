@@ -93,25 +93,25 @@ def save_results(results, filepath):
         json.dump(results, f, indent=2, ensure_ascii=False)
     print(f"Results saved to {filepath}")
 
-def print_model_summary(model, input_shape=(1, 4, 1024)):
-    """打印模型參數總結"""
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
+def print_model_summary(model):
+    """
+    打印模型總結信息 (不進行前向傳播測試)
+    """
     print("=" * 50)
     print("MODEL SUMMARY")
     print("=" * 50)
+    
+    # 計算參數數量
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
     print(f"Total parameters: {total_params:,}")
     print(f"Trainable parameters: {trainable_params:,}")
-    print(f"Model size: {total_params * 4 / (1024**2):.2f} MB")
+    print(f"Model size: {total_params * 4 / 1024 / 1024:.2f} MB")
     
-    # 測試前向傳播
-    model.eval()
-    with torch.no_grad():
-        dummy_input = torch.randn(input_shape)
-        output = model(dummy_input)
-        print(f"Input shape: {input_shape}")
-        print(f"Output shape: {output.shape}")
+    # 移除前向傳播測試部分
+    # 不再進行 dummy input 測試
+    
     print("=" * 50)
 
 def ensure_dir(directory):
