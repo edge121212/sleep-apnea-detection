@@ -6,9 +6,37 @@ import os
 import torch
 import numpy as np
 from tqdm import tqdm
-from apnea_model import YourModel, load_data, train_model, evaluate_model, FocalLoss
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from apnea_model import YourModel, load_data, FocalLoss
 from utils import save_model, save_results, print_model_summary, plot_training_history
 from config import Config
+
+def evaluate_model(model, dataloader, device, name="Test"):
+    """
+    評估模型性能
+    """
+    model.eval()
+    all_preds, all_labels = [], []
+
+    with torch.no_grad():
+        for X, y in dataloader:
+            X, y = X.to(device), y.to(device)
+            outputs = model(X)
+            preds = torch.argmax(outputs, dim=1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(y.cpu().numpy())
+
+    acc = accuracy_score(all_labels, all_preds)
+    prec = precision_score(all_labels, all_preds, average='binary')
+    rec = recall_score(all_labels, all_preds, average='binary')
+    f1 = f1_score(all_labels, all_preds, average='binary')
+    try:
+        auc = roc_auc_score(all_labels, all_preds)
+    except:
+        auc = float('nan')  # 若無法算 AUROC (如只有一類)
+
+    print(f"{name} — Acc: {acc:.4f}, Prec: {prec:.4f}, Recall: {rec:.4f}, F1: {f1:.4f}, AUROC: {auc:.4f}")
+    return acc, prec, rec, f1, auc
 
 def main():
     # 創建輸出目錄

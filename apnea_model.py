@@ -1,11 +1,8 @@
 import numpy as np
 import torch
 from torch.utils.data import TensorDataset, DataLoader
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tqdm import tqdm  # 引入 tqdm 用於視覺化進度條
 
 trainX_path = r"C:\python\Apnea\physionet\split_data\trainX.npy"
 trainY_path = r"C:\python\Apnea\physionet\split_data\trainY.npy"
@@ -145,6 +142,10 @@ class TransformerEncoderLayer(nn.Module):
 class YourModel(nn.Module):
     def __init__(self):
         super(YourModel, self).__init__()
+        
+        # Input Layer Normalization - 對每個 segment 的 4 個通道進行標準化
+        self.input_norm = nn.LayerNorm([1024, 4])  # 對 [時間點, 通道] 維度標準化
+        
         self.mpca = MPCA_Block()
         self.pos_enc = PositionalEncoding(d_model=64)
 
@@ -158,11 +159,21 @@ class YourModel(nn.Module):
         self.fc = nn.Linear(64, 2)  # 分成兩類（正常、呼吸中止）
 
     def forward(self, x):
-        x = x.permute(0, 2, 1)  # [batch_size, 4, 1024] 轉換為 [batch_size, 4, 1024]
+        # x shape: [batch_size, 1024, 4]
+        
+        # 1. 對每個 segment 進行 Layer Normalization
+        x = self.input_norm(x)  # [batch_size, 1024, 4] -> [batch_size, 1024, 4]
+        
+        # 2. 轉換維度供 MPCA 使用
+        x = x.permute(0, 2, 1)  # [batch_size, 4, 1024]
         x = self.mpca(x)        # [batch_size, 64, 256]
+        
+        # 3. 轉換維度供 Transformer 使用
         x = x.permute(0, 2, 1)  # [batch_size, 256, 64]
         x = self.pos_enc(x)     # [batch_size, 256, 64]
         x = self.transformer_layers(x)  # [batch_size, 256, 64]
+        
+        # 4. 全局平均池化和分類
         x = x.permute(0, 2, 1)  # [batch_size, 64, 256]
         x = self.global_avg_pool(x)  # [batch_size, 64, 1]
         x = x.squeeze(-1)       # [batch_size, 64]
@@ -188,65 +199,4 @@ class FocalLoss(nn.Module):
             return focal_loss.sum()
         return focal_loss
 
-# 在訓練函數中改用 Focal Loss
-def train_model(model, train_loader, val_loader, num_epochs, lr=1e-3):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
 
-    criterion = FocalLoss(gamma=2)  # 使用 Focal Loss，gamma=2
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0
-
-        # 使用 tqdm 包裝 train_loader，顯示進度條
-        with tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", unit="batch") as tepoch:
-            for X, y in tepoch:
-                X, y = X.to(device), y.to(device)
-                optimizer.zero_grad()
-                output = model(X)
-                loss = criterion(output, y)
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()
-
-                # 更新進度條的描述
-                tepoch.set_postfix(loss=loss.item())
-
-        print(f"Epoch {epoch+1}/{num_epochs}, Total Loss: {total_loss:.4f}")
-        evaluate_model(model, val_loader, device, name="Validation")
-
-def evaluate_model(model, dataloader, device, name="Test"):
-    model.eval()
-    all_preds, all_labels = [], []
-
-    with torch.no_grad():
-        # 使用 tqdm 包裝 dataloader，顯示進度條
-        with tqdm(dataloader, desc=f"Evaluating {name}", unit="batch") as tepoch:
-            for X, y in tepoch:
-                X, y = X.to(device), y.to(device)
-                outputs = model(X)
-                preds = torch.argmax(outputs, dim=1)
-                all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(y.cpu().numpy())
-
-    acc = accuracy_score(all_labels, all_preds)
-    prec = precision_score(all_labels, all_preds)
-    rec = recall_score(all_labels, all_preds)
-    f1 = f1_score(all_labels, all_preds)
-    try:
-        auc = roc_auc_score(all_labels, all_preds)
-    except:
-        auc = float('nan')  # 若無法算 AUROC (如只有一類)
-
-    print(f"{name} — Acc: {acc:.4f}, Prec: {prec:.4f}, Recall: {rec:.4f}, F1: {f1:.4f}, AUROC: {auc:.4f}")
-
-if __name__ == "__main__":
-    train_loader, val_loader, test_loader = load_data()
-
-    model = YourModel()
-    train_model(model, train_loader, val_loader, num_epochs=10)  # 測試用 epoch 設為 5
-
-    print("\nFinal Evaluation on Test Set:")
-    evaluate_model(model, test_loader, device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
