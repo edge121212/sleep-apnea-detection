@@ -142,10 +142,6 @@ class TransformerEncoderLayer(nn.Module):
 class YourModel(nn.Module):
     def __init__(self):
         super(YourModel, self).__init__()
-        
-        # Input Layer Normalization - 對每個 segment 的 4 個通道進行標準化
-        self.input_norm = nn.LayerNorm([1024, 4])  # 對 [時間點, 通道] 維度標準化
-        
         self.mpca = MPCA_Block()
         self.pos_enc = PositionalEncoding(d_model=64)
 
@@ -161,19 +157,24 @@ class YourModel(nn.Module):
     def forward(self, x):
         # x shape: [batch_size, 1024, 4]
         
-        # 1. 對每個 segment 進行 Layer Normalization
-        x = self.input_norm(x)  # [batch_size, 1024, 4] -> [batch_size, 1024, 4]
+        # 對每個通道分別進行 z-score 標準化（更溫和的方式）
+        x_normalized = torch.zeros_like(x)
+        for i in range(4):  # 對每個通道分別標準化
+            channel_data = x[:, :, i]  # [batch_size, 1024]
+            mean = channel_data.mean(dim=1, keepdim=True)  # [batch_size, 1]
+            std = channel_data.std(dim=1, keepdim=True) + 1e-8  # 避免除零
+            x_normalized[:, :, i] = (channel_data - mean) / std
         
-        # 2. 轉換維度供 MPCA 使用
-        x = x.permute(0, 2, 1)  # [batch_size, 4, 1024]
+        # 轉換維度供 MPCA 使用
+        x = x_normalized.permute(0, 2, 1)  # [batch_size, 4, 1024]
         x = self.mpca(x)        # [batch_size, 64, 256]
         
-        # 3. 轉換維度供 Transformer 使用
+        # 轉換維度供 Transformer 使用
         x = x.permute(0, 2, 1)  # [batch_size, 256, 64]
         x = self.pos_enc(x)     # [batch_size, 256, 64]
         x = self.transformer_layers(x)  # [batch_size, 256, 64]
         
-        # 4. 全局平均池化和分類
+        # 全局平均池化和分類
         x = x.permute(0, 2, 1)  # [batch_size, 64, 256]
         x = self.global_avg_pool(x)  # [batch_size, 64, 1]
         x = x.squeeze(-1)       # [batch_size, 64]
