@@ -35,7 +35,7 @@ class Config:
     
     # 訓練參數
     BATCH_SIZE = 64
-    LEARNING_RATE = 5e-4  # 降低學習率
+    LEARNING_RATE = 1e-3
     NUM_EPOCHS = 10
     
     # Focal Loss參數

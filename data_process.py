@@ -73,62 +73,32 @@ def zscore_normalize(ecg):
 # ============================
 
 def detect_rpeaks(ecg, fs):
+    """
+    使用 biosppy Hamilton 演算法檢測 R 峰
+    """
     print(f"R峰檢測 - 信號長度: {len(ecg)}, 採樣率: {fs} Hz")
     
-    try:
-        # 方法1: 使用 biosppy
-        from biosppy.signals.ecg import correct_rpeaks, hamilton_segmenter
-        print("使用 biosppy Hamilton 演算法...")
-        rpeaks = hamilton_segmenter(ecg, sampling_rate=fs)[0]
-        print(f"   初始檢測到 {len(rpeaks)} 個 R 峰")
-        
-        rpeaks_corrected = correct_rpeaks(signal=ecg, 
-                                        rpeaks=rpeaks, 
-                                        sampling_rate=fs, 
-                                        tol=0.05)[0]
-        print(f"   修正後有 {len(rpeaks_corrected)} 個 R 峰")
-        
-        # 計算平均心率
-        if len(rpeaks_corrected) > 1:
-            avg_rr = np.mean(np.diff(rpeaks_corrected)) / fs
-            avg_hr = 60 / avg_rr
-            print(f"   平均心率: {avg_hr:.1f} bpm")
-        
-        return rpeaks_corrected
-        
-    except Exception as e:
-        print(f"biosppy 失敗: {e}")
-        try:
-            # 方法2: 使用 wfdb 內建方法
-            from wfdb import processing
-            print("使用 wfdb XQRS 演算法...")
-            xqrs = processing.XQRS(sig=ecg, fs=fs)
-            xqrs.detect()
-            rpeaks = xqrs.qrs_inds
-            print(f"   檢測到 {len(rpeaks)} 個 R 峰")
-            
-            if len(rpeaks) > 1:
-                avg_rr = np.mean(np.diff(rpeaks)) / fs
-                avg_hr = 60 / avg_rr
-                print(f"   平均心率: {avg_hr:.1f} bpm")
-            
-            return rpeaks
-            
-        except Exception as e2:
-            print(f"wfdb 失敗: {e2}")
-            # 方法3: 簡單的峰值檢測 (備用方案)
-            from scipy.signal import find_peaks
-            print("使用簡單峰值檢測...")
-            threshold = np.mean(ecg) + 1.5 * np.std(ecg)
-            peaks, _ = find_peaks(ecg, height=threshold, distance=int(0.6*fs))
-            print(f"   檢測到 {len(peaks)} 個峰值")
-            
-            if len(peaks) > 1:
-                avg_rr = np.mean(np.diff(peaks)) / fs
-                avg_hr = 60 / avg_rr
-                print(f"   平均心率: {avg_hr:.1f} bpm")
-            
-            return peaks
+    from biosppy.signals.ecg import correct_rpeaks, hamilton_segmenter
+    print("使用 biosppy Hamilton 演算法...")
+    
+    # Hamilton 演算法檢測 R 峰
+    rpeaks = hamilton_segmenter(ecg, sampling_rate=fs)[0]
+    print(f"   初始檢測到 {len(rpeaks)} 個 R 峰")
+    
+    # 修正 R 峰位置
+    rpeaks_corrected = correct_rpeaks(signal=ecg, 
+                                    rpeaks=rpeaks, 
+                                    sampling_rate=fs, 
+                                    tol=0.05)[0]
+    print(f"   修正後有 {len(rpeaks_corrected)} 個 R 峰")
+    
+    # 計算平均心率
+    if len(rpeaks_corrected) > 1:
+        avg_rr = np.mean(np.diff(rpeaks_corrected)) / fs
+        avg_hr = 60 / avg_rr
+        print(f"   平均心率: {avg_hr:.1f} bpm")
+    
+    return rpeaks_corrected
 
 def construct_ra_rri_rrid(ecg, rpeaks, fs):
 
