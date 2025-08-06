@@ -157,13 +157,14 @@ class YourModel(nn.Module):
     def forward(self, x):
         # x shape: [batch_size, 1024, 4]
         
-        # 對每個通道分別進行 z-score 標準化（更溫和的方式）
+        # 對每個通道分別進行 Min-Max 標準化（歸一化到 [0, 1] 範圍）
         x_normalized = torch.zeros_like(x)
         for i in range(4):  # 對每個通道分別標準化
             channel_data = x[:, :, i]  # [batch_size, 1024]
-            mean = channel_data.mean(dim=1, keepdim=True)  # [batch_size, 1]
-            std = channel_data.std(dim=1, keepdim=True) + 1e-8  # 避免除零
-            x_normalized[:, :, i] = (channel_data - mean) / std
+            min_val = channel_data.min(dim=1, keepdim=True)[0]  # [batch_size, 1]
+            max_val = channel_data.max(dim=1, keepdim=True)[0]  # [batch_size, 1]
+            range_val = max_val - min_val + 1e-8  # 避免除零
+            x_normalized[:, :, i] = (channel_data - min_val) / range_val
         
         # 轉換維度供 MPCA 使用
         x = x_normalized.permute(0, 2, 1)  # [batch_size, 4, 1024]

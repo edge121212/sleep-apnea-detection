@@ -73,3 +73,8 @@ checkpoints/
 models/
 *.pkl
 *.pickle
+
+# Additional directories to ignore
+physionet/
+results/
+test_results/
