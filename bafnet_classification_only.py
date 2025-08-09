@@ -634,7 +634,7 @@ def main():
     # 🔧 調整 epochs：睡眠呼吸中止檢測建議 50-100 epochs
     # 初期測試: 20 epochs, 正式訓練: 50-100 epochs
     history = train_model_classification_only(model, train_loader, val_loader, optimizer, 
-                                            num_epochs=42, device=device, 
+                                            num_epochs=25, device=device, 
                                             early_stopping_patience=10)
     
     # 獲取最佳驗證準確率用於過擬合檢測

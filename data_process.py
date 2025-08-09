@@ -58,7 +58,7 @@ def wavelet_denoise(ecg, wavelet="coif4", level=6):
     return denoised[: len(ecg)]
 
 # ============================
-# PART C: Z-SCORE NORMALIZATION
+# PART C: NORMALIZATION
 # ============================
 
 def zscore_normalize(ecg):
@@ -67,6 +67,20 @@ def zscore_normalize(ecg):
     if sigma < 1e-12:
         return ecg - mu
     return (ecg - mu) / sigma
+
+def minmax_normalize(signal):
+    """
+    Min-Max 標準化：將信號縮放到 [0, 1] 範圍
+    對每個 segment 獨立進行標準化
+    """
+    min_val = np.min(signal)
+    max_val = np.max(signal)
+    
+    # 避免除零錯誤
+    if max_val - min_val < 1e-12:
+        return signal - min_val  # 如果信號是常數，返回零信號
+    
+    return (signal - min_val) / (max_val - min_val)
 
 # ============================
 # PART D: R-PEAK DETECTION, AUX
@@ -224,6 +238,7 @@ def preprocess_record(record_id, base_dir, out_len=1024):
     data_segments = []
     segments = segment_ecg_with_context(ecg_denoised, fs, labels)
     print(f"   生成 {len(segments)} 個 6 分鐘段")
+    print(f"   📊 將對每個 segment 進行 Min-Max 標準化 [0,1]")
     
     for seg_ecg, seg_lbl, start_sample, end_sample in segments:
         seg_len = len(seg_ecg)
@@ -255,8 +270,23 @@ def preprocess_record(record_id, base_dir, out_len=1024):
         RRI_resamp  = interp_to_length(RRI_ts,  out_len)
         RRID_resamp = interp_to_length(RRID_ts, out_len)
 
-        # stack => shape (out_len, 4)
-        seg_4ch = np.vstack([ecg_resamp, RA_resamp, RRI_resamp, RRID_resamp]).T
+        # 🔧 新增：對每個通道進行 Min-Max 標準化 (segment-wise)
+        ecg_normalized = minmax_normalize(ecg_resamp)
+        RA_normalized = minmax_normalize(RA_resamp)
+        RRI_normalized = minmax_normalize(RRI_resamp)
+        RRID_normalized = minmax_normalize(RRID_resamp)
+
+        # stack => shape (out_len, 4) 使用標準化後的數據
+        seg_4ch = np.vstack([ecg_normalized, RA_normalized, RRI_normalized, RRID_normalized]).T
+        
+        # 🔍 驗證標準化效果（可選的調試信息）
+        if len(data_segments) == 0:  # 只在第一個 segment 時顯示
+            print(f"   📊 標準化範圍驗證 (第一個segment):")
+            print(f"      ECG: [{ecg_normalized.min():.3f}, {ecg_normalized.max():.3f}]")
+            print(f"      RA:  [{RA_normalized.min():.3f}, {RA_normalized.max():.3f}]")
+            print(f"      RRI: [{RRI_normalized.min():.3f}, {RRI_normalized.max():.3f}]")
+            print(f"      RRID:[{RRID_normalized.min():.3f}, {RRID_normalized.max():.3f}]")
+        
         # Add record_id to the returned tuple
         data_segments.append((seg_4ch, seg_lbl, record_id))
 
@@ -268,7 +298,10 @@ def preprocess_record(record_id, base_dir, out_len=1024):
 # =====================
 
 def process_segments_segment_level(base_dir, out_len=1024):
-    """Process all segments and save with patient IDs"""
+    """
+    Process all segments and save with patient IDs
+    包含 segment-wise Min-Max 標準化 [0,1]
+    """
     output_dir = os.path.join(base_dir, "split_data")
     
     # 檢查是否已存在處理過的數據
