@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import os
 from scipy.interpolate import splev, splrep
-from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score
+from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score, recall_score
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset, DataLoader
 import math
@@ -19,6 +19,85 @@ from tqdm import tqdm
 
 # Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for addressing class imbalance
+    FL(p_t) = -α_t * (1-p_t)^γ * log(p_t)
+    專門用於改善 F1 score 和 accuracy 之間的差距
+    """
+    def __init__(self, alpha=1, gamma=2, weight=None, ignore_index=-100):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.weight = weight
+        self.ignore_index = ignore_index
+        self.ce_fn = nn.CrossEntropyLoss(weight=self.weight, ignore_index=self.ignore_index)
+
+    def forward(self, preds, labels):
+        logpt = -self.ce_fn(preds, labels)
+        pt = torch.exp(logpt)
+        loss = -((1 - pt) ** self.gamma) * self.alpha * logpt
+        return loss
+
+class HybridLoss(nn.Module):
+    """
+    Hybrid Loss Function 結合多種損失函數
+    - Focal Loss: 處理類別不平衡
+    - Cross Entropy: 標準分類損失  
+    - Dice Loss: 改善 F1 score
+    - Label Smoothing: 防止過度自信
+    """
+    def __init__(self, alpha=1, gamma=2, weight=None, 
+                 focal_weight=0.5, ce_weight=0.3, dice_weight=0.2, 
+                 label_smoothing=0.1):
+        super(HybridLoss, self).__init__()
+        self.focal_weight = focal_weight
+        self.ce_weight = ce_weight  
+        self.dice_weight = dice_weight
+        self.label_smoothing = label_smoothing
+        
+        # 各種損失函數
+        self.focal_loss = FocalLoss(alpha=alpha, gamma=gamma, weight=weight)
+        self.ce_loss = nn.CrossEntropyLoss(weight=weight, label_smoothing=label_smoothing)
+        
+        print(f"🔄 Hybrid Loss 權重配置:")
+        print(f"  • Focal Loss: {focal_weight}")
+        print(f"  • Cross Entropy: {ce_weight}") 
+        print(f"  • Dice Loss: {dice_weight}")
+        print(f"  • Label Smoothing: {label_smoothing}")
+    
+    def dice_loss(self, preds, targets):
+        """
+        Dice Loss 專門改善 F1 score
+        """
+        # 獲取預測概率
+        probs = F.softmax(preds, dim=1)
+        
+        # 將目標轉換為 one-hot
+        targets_one_hot = F.one_hot(targets, num_classes=2).float()
+        
+        # 計算每個類別的 Dice coefficient
+        intersection = (probs * targets_one_hot).sum(dim=0)
+        union = probs.sum(dim=0) + targets_one_hot.sum(dim=0)
+        
+        dice_coeff = (2.0 * intersection + 1e-8) / (union + 1e-8)
+        dice_loss = 1.0 - dice_coeff.mean()
+        
+        return dice_loss
+    
+    def forward(self, preds, labels):
+        # 計算各種損失
+        focal = self.focal_loss(preds, labels)
+        ce = self.ce_loss(preds, labels) 
+        dice = self.dice_loss(preds, labels)
+        
+        # 加權組合
+        total_loss = (self.focal_weight * focal + 
+                     self.ce_weight * ce + 
+                     self.dice_weight * dice)
+        
+        return total_loss
 
 class ScaledDotProductAttention(nn.Module):
     def __init__(self, return_attention=False, history_only=False):
@@ -305,7 +384,7 @@ def load_apnea_data():
 
 def train_model_classification_only(model, train_loader, val_loader, optimizer, num_epochs, device, early_stopping_patience=10):
     """
-    純分類訓練 - 沒有重建損失 + 全面正則化策略
+    純分類訓練 - 沒有重建損失 + 全面正則化策略 + Focal Loss 改善不平衡
     
     Args:
         early_stopping_patience: 早停耐心值，驗證損失連續多少個epoch不改善就停止
@@ -313,10 +392,31 @@ def train_model_classification_only(model, train_loader, val_loader, optimizer, 
     best_val_acc = 0.0
     best_val_loss = float('inf')
     patience_counter = 0
-    history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
+    history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': [], 'train_recall': [], 'val_recall': []}
     
-    # 只使用分類損失
-    classification_criterion = nn.CrossEntropyLoss()
+    # 🎯 使用 Focal Loss 改善類別不平衡問題
+    # 計算類別權重
+    all_targets = []
+    for _, targets in train_loader:
+        all_targets.extend(targets.numpy())
+    all_targets = np.array(all_targets)
+    
+    class_counts = np.bincount(all_targets)
+    total_samples = len(all_targets)
+    class_weights = total_samples / (len(class_counts) * class_counts)
+    class_weights = torch.FloatTensor(class_weights).to(device)
+    
+    print(f"🎯 類別分布: {class_counts}, 權重: {class_weights.cpu().numpy()}")
+    
+    # 🔄 使用 Hybrid Loss 組合多種損失函數
+    classification_criterion = HybridLoss(
+        alpha=1, gamma=2, weight=class_weights,
+        focal_weight=0.4,      # Focal Loss 處理不平衡
+        ce_weight=0.3,         # Cross Entropy 標準分類  
+        dice_weight=0.3,       # Dice Loss 改善 F1
+        label_smoothing=0.1    # Label Smoothing 防止過度自信
+    )
+    print("� 使用 Hybrid Loss 組合 (Focal + CE + Dice + Label Smoothing)")
     
     # 🛡️ 學習率調度器：當驗證損失停止改善時降低學習率
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -335,6 +435,8 @@ def train_model_classification_only(model, train_loader, val_loader, optimizer, 
         train_loss = 0.0
         train_correct = 0
         train_total = 0
+        train_predictions = []
+        train_targets_list = []
         
         for inputs, targets in tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}', total=len(train_loader)):
             inputs, targets = inputs.to(device), targets.to(device)
@@ -386,14 +488,21 @@ def train_model_classification_only(model, train_loader, val_loader, optimizer, 
             train_total += targets.size(0)
             train_correct += predicted.eq(targets).sum().item()
             
+            # 🎯 收集預測結果用於計算 recall
+            train_predictions.extend(predicted.cpu().numpy())
+            train_targets_list.extend(targets.cpu().numpy())
+            
         train_loss = train_loss / len(train_loader)
         train_acc = 100. * train_correct / train_total
+        train_recall = recall_score(train_targets_list, train_predictions, average='binary', zero_division=0)
         
         # Validation phase
         model.eval()
         val_loss = 0.0
         val_correct = 0
         val_total = 0
+        val_predictions = []
+        val_targets_list = []
         
         with torch.no_grad():
             for inputs, targets in val_loader:
@@ -413,22 +522,29 @@ def train_model_classification_only(model, train_loader, val_loader, optimizer, 
                 val_total += targets.size(0)
                 val_correct += predicted.eq(targets).sum().item()
                 
+                # 🎯 收集預測結果用於計算 recall
+                val_predictions.extend(predicted.cpu().numpy())
+                val_targets_list.extend(targets.cpu().numpy())
+                
         val_loss = val_loss / len(val_loader)
         val_acc = 100. * val_correct / val_total
+        val_recall = recall_score(val_targets_list, val_predictions, average='binary', zero_division=0)
         
         # Save history
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
         history['train_acc'].append(train_acc)
         history['val_acc'].append(val_acc)
+        history['train_recall'].append(train_recall)
+        history['val_recall'].append(val_recall)
         
         # 🛡️ 學習率調度
         scheduler.step(val_loss)
         current_lr = optimizer.param_groups[0]['lr']
         
         print(f'Epoch {epoch+1}/{num_epochs}:')
-        print(f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%')
-        print(f'Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%')
+        print(f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%, Train Recall: {train_recall:.4f}')
+        print(f'Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val Recall: {val_recall:.4f}')
         print(f'Learning Rate: {current_lr:.2e}')
         
         # Save best model (基於驗證準確率)
@@ -518,7 +634,7 @@ def main():
     # 🔧 調整 epochs：睡眠呼吸中止檢測建議 50-100 epochs
     # 初期測試: 20 epochs, 正式訓練: 50-100 epochs
     history = train_model_classification_only(model, train_loader, val_loader, optimizer, 
-                                            num_epochs=50, device=device, 
+                                            num_epochs=42, device=device, 
                                             early_stopping_patience=10)
     
     # 獲取最佳驗證準確率用於過擬合檢測
@@ -548,9 +664,37 @@ def main():
     # Calculate metrics
     f1 = f1_score(all_targets, all_preds, average='binary')
     roc = roc_auc_score(all_targets, all_preds)
+    recall = recall_score(all_targets, all_preds, average='binary')
     
     print(f'F1 Score: {f1:.4f}')
     print(f'ROC AUC: {roc:.4f}')
+    print(f'Recall: {recall:.4f}')
+    
+    # 🎯 分析 Accuracy vs F1 差距
+    acc_f1_gap = test_acc/100 - f1
+    print(f'\n📊 Hybrid Loss 性能分析:')
+    print(f'Accuracy: {test_acc:.2f}%')
+    print(f'F1 Score: {f1:.4f}')
+    print(f'Recall: {recall:.4f}')
+    print(f'Accuracy-F1 差距: {acc_f1_gap:.4f}')
+    
+    if acc_f1_gap > 0.1:
+        print("⚠️  較大的 Accuracy-F1 差距，建議:")
+        print("  • 增加 Dice Loss 權重 (當前: 0.3 → 0.4-0.5)")
+        print("  • 調整 Focal Loss gamma 參數 (當前: 2 → 3-4)")
+        print("  • 減少 Label Smoothing (當前: 0.1 → 0.05)")
+    elif acc_f1_gap > 0.05:
+        print("⚠️  中等的 Accuracy-F1 差距，建議微調:")
+        print("  • 增加 Dice Loss 權重 (當前: 0.3 → 0.35)")
+        print("  • 調整損失函數權重比例")
+    else:
+        print("✅ Accuracy 和 F1 差距較小，Hybrid Loss 效果良好")
+        
+    print(f'\n🔄 當前 Hybrid Loss 配置效果:')
+    print(f'  • Focal Loss (40%): 處理類別不平衡')
+    print(f'  • Cross Entropy (30%): 標準分類損失')
+    print(f'  • Dice Loss (30%): 改善 F1 score')
+    print(f'  • Label Smoothing (10%): 防止過度自信')
     
     print("\n=== 與原版 BAFNet 的差異 ===")
     print("✅ 移除了 4 個重建解碼器 (大幅減少參數)")
@@ -566,24 +710,43 @@ def main():
     print("  • 分層權重衰減 (卷積層vs全連接層)")
     print("  • 混合精度訓練 (GPU可用時)")
     print("  • AdamW優化器 (內建權重衰減)")
+    print("🔄 Hybrid Loss Function:")
+    print("  • Focal Loss (處理類別不平衡)")
+    print("  • Cross Entropy (標準分類)")
+    print("  • Dice Loss (改善 F1 score)")
+    print("  • Label Smoothing (防止過度自信)")
     print("✅ 調整 batch size 與 YourModel 一致")
     print("🎯 智能 dropout 率選擇 (基於數據集大小)")
     
-    print(f"\n🏆 最終測試性能:")
+    print(f"\n🏆 最終測試性能 (Hybrid Loss):")
     print(f"  • 準確率: {test_acc:.2f}%")
     print(f"  • F1分數: {f1:.4f}")
     print(f"  • ROC AUC: {roc:.4f}")
+    print(f"  • Recall: {recall:.4f}")
     print(f"  • 模型參數: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     print(f"  • Dropout率: {model.dropout_rate}")
+    print(f"  • 損失函數: Hybrid (Focal+CE+Dice+LS)")
     
     # 🛡️ 過擬合檢測提示
     if test_acc < best_val_acc * 0.95:  # 測試準確率比最好的驗證準確率低 5% 以上
         print("\n⚠️  可能存在輕微過擬合，建議:")
         print("  • 增加 dropout_rate")
         print("  • 增加數據增強")
-        print("  • 減少模型複雜度")
+        print("  • 調整 Hybrid Loss 權重")
+        print("  • 增加 Label Smoothing")
     else:
         print("\n✅ 模型泛化良好，無明顯過擬合")
+        
+    print(f"\n💡 Hybrid Loss 調優建議:")
+    if f1 < 0.8:
+        print("  🎯 F1 偏低，建議增加 Dice Loss 權重")
+        print("  🔧 可嘗試: dice_weight=0.4, focal_weight=0.3, ce_weight=0.3")
+    if recall < 0.8:
+        print("  🎯 Recall 偏低，建議增加 Focal Loss gamma")
+        print("  🔧 可嘗試: gamma=3 或 4")
+    if acc_f1_gap > 0.1:
+        print("  🎯 差距太大，建議平衡各損失權重") 
+        print("  🔧 可嘗試: focal=0.3, ce=0.2, dice=0.5, label_smoothing=0.05")
 
 if __name__ == "__main__":
     main()
