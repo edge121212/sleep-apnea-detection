@@ -16,22 +16,24 @@ def evaluate_model(model, dataloader, device, name="Test"):
     評估模型性能
     """
     model.eval()
-    all_preds, all_labels = [], []
+    all_preds, all_labels, all_probs = [], [], []
 
     with torch.no_grad():
         for X, y in dataloader:
             X, y = X.to(device), y.to(device)
             outputs = model(X)
+            probs = torch.softmax(outputs, dim=1)[:, 1]
             preds = torch.argmax(outputs, dim=1)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(y.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
 
     acc = accuracy_score(all_labels, all_preds)
     prec = precision_score(all_labels, all_preds, average='binary')
     rec = recall_score(all_labels, all_preds, average='binary')
     f1 = f1_score(all_labels, all_preds, average='binary')
     try:
-        auc = roc_auc_score(all_labels, all_preds)
+        auc = roc_auc_score(all_labels, all_probs)
     except:
         auc = float('nan')  # 若無法算 AUROC (如只有一類)
 
